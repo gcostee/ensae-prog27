@@ -1,12 +1,16 @@
 import io
 import os
 import re
+import sys
 import time
 import statistics
 import zstandard as zstd
 import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
+
+sys.path.insert(0, r"C:\Users\gauti\OneDrive\Documents\projet_lichess\scripts")   # dossier contenant features_core_v2.py
+from features_core_v2 import extraire_evals, sans_variations      # lecture des évaluations (même code que l'analyse)
 
 debut = time.perf_counter()
 
@@ -39,6 +43,7 @@ SCHEMA = pa.schema([
     ("has_clk", pa.bool_()),
     ("has_eval", pa.bool_()),
     ("Moves_clean", pa.string()),
+    ("Evals", pa.binary()),          # NOUVEAU : évaluations alignées sur les demi-coups (int16, voir extraire_evals)
 ])
 
 
@@ -105,6 +110,8 @@ def filtrer_et_ecrire(chemin, sortie):
                     if EXIGER_EVAL and not a_eval:
                         n_sans_eval += 1
                     else:
+                        if "(" in ligne:                  # variations d'analyse : ne gardent que la ligne principale
+                            ligne = sans_variations(ligne)
                         sans = RE_COMMENTAIRE.sub("", ligne) if "{" in ligne else ligne
                         numeros = RE_NUMERO.findall(sans)
                         nb = int(numeros[-1]) if numeros else 0
@@ -128,6 +135,7 @@ def filtrer_et_ecrire(chemin, sortie):
                                 "has_clk": a_clk,
                                 "has_eval": a_eval,
                                 "Moves_clean": nettoyer_coups(sans),
+                                "Evals": extraire_evals(ligne),      # NOUVEAU : évaluations par demi-coup
                             })
                             if len(lot) >= TAILLE_LOT:
                                 vider_lot(lot, writer)
@@ -156,7 +164,7 @@ comptes, (reste_g, reste_l), n_lues, n_gardees, n_clk, n_eval, n_sans_eval = fil
 
 # ---------- Statistiques par tranche ----------
 moyenne = statistics.mean(comptes)
-variance = statistics.variance(comptes)          # variance corrigxée (n-1)
+variance = statistics.variance(comptes)          # variance corrigée (n-1)
 ecart_type = statistics.stdev(comptes)
 coef_var = ecart_type / moyenne                  # coefficient de variation
 

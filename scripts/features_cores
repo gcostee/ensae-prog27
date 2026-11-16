@@ -22,6 +22,7 @@ demi-coup, du point de vue des BLANCS :  centipions (bornés à ±9999) ;  mat e
 = +(10000 + k), pour les noirs = -(10000 + k) ;  -32768 = évaluation absente.
 """
 import re
+from array import array
 
 import chess
 import numpy as np
@@ -53,6 +54,9 @@ FENETRE_DAME = 4       # n_sacrifices_dame_valides : évaluation 4 demi-coups ap
 
 NAN = float("nan")
 _RE_COMMENT = re.compile(r"\{[^}]*\}")
+_RE_COM = re.compile(r"\{([^}]*)\}")
+_RE_VAR_OU_COM = re.compile(r"(\{[^}]*\})|(\([^()]*\))")   # commentaire {..} (conservé) ou variation (..) (supprimée)
+_RESULTATS = {"1-0", "0-1", "1/2-1/2", "*"}
 _S = np.tile(np.array([1.0, -1.0]), 2000)   # +1 si les blancs jouent au demi-coup t (t=1 : blancs)
 _ARANGE = np.arange(4000)
 
@@ -97,6 +101,70 @@ DECIMALES = {
 }
 NAN_EVAL = (NAN,) * len(FEATURES_EVAL)
 ECHEC = tuple(None if f == "piece_mateuse" else NAN for f in FEATURES_PARTIE)
+
+
+# ----------------------------------------------------------------------------
+# Lecture du texte PGN : variations, évaluations (utilisé par filtrer_parties.py et le diagnostic)
+# ----------------------------------------------------------------------------
+def sans_variations(texte):
+    """Supprime les variations entre parenthèses (analyses alternatives) en conservant les commentaires {..},
+    même s'ils contiennent des parenthèses. Gère l'imbrication."""
+    if "(" not in texte:
+        return texte
+    prec = None
+    while prec != texte:
+        prec = texte
+        texte = _RE_VAR_OU_COM.sub(lambda m: m.group(1) or "", texte)
+    return texte
+
+
+def nb_coups_texte(morceau):
+    """Nombre de coups (ni numéros de coup, ni résultat) dans un morceau de texte PGN."""
+    return sum(1 for t in morceau.split() if t[-1] != "." and t[0] != "$" and t not in _RESULTATS)   # "$n" = NAG
+
+
+def nb_demi_coups(moves):
+    """Nombre de demi-coups d'un texte de coups, selon la même règle que features_partie (sans plateau)."""
+    n = 0
+    for tok in moves.split():
+        if "." in tok:
+            tok = tok[tok.rfind(".") + 1:]
+        if tok and tok[0] not in "0123456789*$":
+            n += 1
+    return n
+
+
+def valeur_eval(commentaire):
+    """Évaluation du commentaire { [%eval 0.17] [%clk ...] } en int16, du point de vue des blancs :
+    centipions (bornés à ±9999) ; mat en k coups : +(10000+k) pour les blancs, -(10000+k) pour les noirs ;
+    SENT si absente."""
+    i = commentaire.find("[%eval ")
+    if i < 0:
+        return SENT
+    s = commentaire[i + 7:commentaire.find("]", i)].strip()
+    try:
+        if s[0] == "#":
+            k = int(s[1:])
+            return SENT if k == 0 else (10000 + k if k > 0 else -10000 + k)
+        return max(-9999, min(9999, round(float(s) * 100)))
+    except (ValueError, IndexError):
+        return SENT
+
+
+def extraire_evals(ligne):
+    """Une évaluation par demi-coup (SENT si le coup n'a pas d'évaluation), en octets int16 natifs.
+    Chaque commentaire annote le coup qui le précède ; les commentaires supplémentaires (texte d'analyse)
+    et les variations sont ignorés ; les coups sans commentaire reçoivent SENT."""
+    ligne = sans_variations(ligne)
+    vals, pos = [], 0
+    for m in _RE_COM.finditer(ligne):
+        n = nb_coups_texte(ligne[pos:m.start()])
+        pos = m.end()
+        if n:
+            vals.extend([SENT] * (n - 1))
+            vals.append(valeur_eval(m.group(1)))
+    vals.extend([SENT] * nb_coups_texte(ligne[pos:]))
+    return array("h", vals).tobytes()
 
 
 # ----------------------------------------------------------------------------
@@ -292,6 +360,8 @@ def features_eval(buf, sgn, n, bals, capt, dames_sac, mat_fin):
 def features_partie(moves, result, evals=None):
     """moves : texte des coups ("1. e4 e5 2. Nf3 ..."), result : "1-0" / "0-1" / autre,
     evals : octets int16 des évaluations (ou None). Renvoie un tuple dans l'ordre de FEATURES_PARTIE."""
+    if "(" in moves:                                   # variations éventuelles
+        moves = sans_variations(moves)
     if "{" in moves:                                   # commentaires éventuels
         moves = _RE_COMMENT.sub("", moves)
     sgn = 1 if result == "1-0" else (-1 if result == "0-1" else 0)   # 0 : pas de vainqueur

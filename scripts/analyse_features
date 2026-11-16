@@ -18,6 +18,7 @@ Sorties dans le dossier SORTIE :
   nuages_de_points_materiel.png, nuages_de_points_evaluation.png
 """
 import glob
+import hashlib
 import os
 import sys
 import time
@@ -32,8 +33,9 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from matplotlib.patches import Patch
 
-sys.path.insert(0, r"C:\Users\gauti\OneDrive\Documents\projet_lichess\v1\scripts")   # dossier contenant features_core_v2.py
-from features_core import DECIMALES, FEATURES_PARTIE, traiter_bloc
+sys.path.insert(0, r"C:\Users\gauti\OneDrive\Documents\projet_lichess\scripts")   # dossier contenant features_core_v2.py
+import features_core_v2
+from features_core_v2 import DECIMALES, FEATURES_PARTIE, MANQ_MAX, SENT, nb_demi_coups, traiter_bloc
 
 # ----------------------------------------------------------------------------
 # Configuration
@@ -43,7 +45,7 @@ FICHIER = "parties_filtrees.parquet"
 N = None                     # nombre de parties traitées ; None = toute la base
 COL_COUPS = "Moves_clean"
 COL_EVALS = "Evals"
-SORTIE = "resultats_features"
+SORTIE = "resultats_features_v2"
 
 BLOC_LECTURE = 100_000       # parties lues / traitées / écrites à la fois (mémoire constante)
 TAILLE_TACHE = 2_000         # parties par tâche envoyée aux processus
@@ -145,6 +147,59 @@ def etape(nom, chrono):
         yield
     finally:
         chrono[nom] = time.perf_counter() - t
+
+
+def signature_calcul(chemin_parquet, total):
+    """Empreinte du calcul : fichier source (taille + date), code et seuils de features_core_v2.py, paramètres.
+    Les blocs ne sont repris que si l'empreinte est identique : un parquet régénéré (par exemple avec les
+    évaluations) ou un seuil modifié ne peut plus réutiliser d'anciens blocs périmés."""
+    st = os.stat(chemin_parquet)
+    h = hashlib.md5(f"{st.st_size}|{st.st_mtime_ns}|{total}|{BLOC_LECTURE}|{GARDER_COUPS}".encode())
+    with open(features_core_v2.__file__, "rb") as f:
+        h.update(f.read())
+    return h.hexdigest()[:10]
+
+
+# ----------------------------------------------------------------------------
+# Diagnostic des évaluations (sur les premières parties du premier bloc)
+# ----------------------------------------------------------------------------
+def diagnostiquer_evals(batch, nmax=2000):
+    """Dit clairement POURQUOI les features d'évaluation seraient vides : colonne absente, colonne vide,
+    évaluations non alignées sur les coups, ou couverture insuffisante."""
+    print("\n--- Diagnostic des évaluations ---")
+    if COL_EVALS not in batch.schema.names:
+        print(f"  PROBLÈME : le parquet n'a pas de colonne '{COL_EVALS}'. Il a été produit avant l'ajout de l'extraction "
+              "des évaluations.\n  -> relancer filtrer_parties.py (nouvelle version) pour régénérer parties_filtrees.parquet.")
+        return
+    b = batch.slice(0, min(nmax, batch.num_rows))
+    coups, evals = b.column(COL_COUPS).to_pylist(), b.column(COL_EVALS).to_pylist()
+    presentes = alignees = couvertes = 0
+    exemple = None
+    for m, e in zip(coups, evals):
+        if not e:
+            continue
+        presentes += 1
+        E = np.frombuffer(e, dtype=np.int16)
+        n = nb_demi_coups(m)
+        if E.size == n:
+            alignees += 1
+            couvertes += (E == SENT).sum() <= MANQ_MAX * n
+        elif exemple is None:
+            exemple = (E.size, n)
+    t = len(coups)
+    print(f"  {t:,} parties examinées : évaluations non vides {presentes:,} | alignées sur les coups {alignees:,} "
+          f"| couverture >= {100 - 100 * MANQ_MAX:.0f} % : {couvertes:,}")
+    if presentes == 0:
+        print("  PROBLÈME : la colonne existe mais est vide -> le parquet a été produit sans extraction des "
+              "évaluations ; relancer filtrer_parties.py (nouvelle version).")
+    elif alignees < 0.9 * presentes:
+        print(f"  PROBLÈME : les évaluations ne correspondent pas au nombre de coups (exemple : {exemple[0]} "
+              f"évaluations pour {exemple[1]} coups). Le format du PGN diffère de celui attendu : "
+              "envoyer un extrait d'une partie du dump.")
+    elif couvertes < 0.9 * alignees:
+        print("  PROBLÈME : trop d'évaluations manquantes dans chaque partie (couverture < 95 %).")
+    else:
+        print("  OK : les évaluations sont exploitables.")
 
 
 # ----------------------------------------------------------------------------
@@ -466,7 +521,7 @@ def tracer_nuages(acc, features, titre, chemin_png):
         return
     k = len(ok)
 
-    X = jeu[ok].to_numpy(float)
+    X = np.array(jeu[ok], dtype=float)                          # copie modifiable (pandas peut renvoyer une vue en lecture seule)
     rng = np.random.default_rng(0)
     for j, f in enumerate(ok):                                  # léger bruit pour les variables discrètes
         if jeu[f].nunique() <= MAX_VALEURS:
@@ -537,11 +592,15 @@ def main(dossier=DOSSIER, fichier=FICHIER, n=N, sortie=SORTIE):
 
 def _executer(dossier, fichier, n, sortie, t_debut, chrono):
     rep = os.path.join(dossier, sortie)
-    rep_blocs = os.path.join(rep, "blocs")
-    os.makedirs(rep_blocs, exist_ok=True)
-
-    pf = pq.ParquetFile(os.path.join(dossier, fichier))
+    os.makedirs(rep, exist_ok=True)
+    chemin_parquet = os.path.join(dossier, fichier)
+    pf = pq.ParquetFile(chemin_parquet)
     total = pf.metadata.num_rows if n is None else min(n, pf.metadata.num_rows)
+    rep_blocs = os.path.join(rep, f"blocs_{signature_calcul(chemin_parquet, total)}")
+    os.makedirs(rep_blocs, exist_ok=True)
+    for ancien in glob.glob(os.path.join(rep, "blocs*")):
+        if os.path.abspath(ancien) != os.path.abspath(rep_blocs):
+            print(f"  (anciens blocs ignorés, issus d'un autre calcul : {os.path.basename(ancien)} ; à supprimer à la main)")
     print(f"{total:,} parties à traiter, par blocs de {BLOC_LECTURE:,}")
     if COL_EVALS not in pf.schema_arrow.names:
         print(f"  ATTENTION : colonne '{COL_EVALS}' absente du parquet -> features d'évaluation à NaN "
@@ -561,6 +620,8 @@ def _executer(dossier, fichier, n, sortie, t_debut, chrono):
                 if vus + batch.num_rows > total:
                     batch = batch.slice(0, total - vus)
                 chemin_bloc = os.path.join(rep_blocs, f"bloc_{k:06d}.parquet")
+                if k == 1:
+                    diagnostiquer_evals(batch)
 
                 deja = False
                 if REPRENDRE and os.path.exists(chemin_bloc):   # bloc valide : même nombre de lignes, mêmes colonnes
@@ -615,6 +676,11 @@ def _executer(dossier, fichier, n, sortie, t_debut, chrono):
         for titre, features, nom_png in NUAGES:
             tracer_nuages(acc, features, titre, os.path.join(rep, nom_png))
         print(f"Fichiers écrits dans {rep}")
+        n_ok = acc.stat("acpl_gagnant")[0]
+        print(f"\nParties aux features d'évaluation exploitables : {int(n_ok):,}/{total:,} ({100 * n_ok / max(total, 1):.1f} %)")
+        if n_ok < 0.5 * total:
+            print("  ATTENTION : moins de la moitié des parties ont des évaluations exploitables -> voir le "
+                  "'Diagnostic des évaluations' affiché au début.")
     if SHOW:
         plt.show()
 
