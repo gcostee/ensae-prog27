@@ -13,10 +13,11 @@ Les features d'évaluation utilisent la colonne 'Evals' écrite par filtrer_part
 elles valent NaN.
 
 Sorties dans le dossier SORTIE :
-  features_v2.parquet, resume_statistiques.csv, correlation_spearman.csv,
+  features.parquet, resume_statistiques.csv, correlation_spearman.csv,
   distributions_<groupe>.png, matrice_correlation.png,
   nuages_de_points_materiel.png, nuages_de_points_evaluation.png
 """
+import argparse
 import glob
 import hashlib
 import os
@@ -25,6 +26,7 @@ import time
 from collections import Counter
 from concurrent.futures import ProcessPoolExecutor
 from contextlib import contextmanager
+from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -33,24 +35,29 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from matplotlib.patches import Patch
 
-sys.path.insert(0, r"C:\Users\gauti\OneDrive\Documents\projet_lichess\scripts")   # dossier contenant features_core_v2.py
-import features_core_v2
-from features_core_v2 import DECIMALES, FEATURES_PARTIE, MANQ_MAX, SENT, nb_demi_coups, traiter_bloc
+try:                                                 # permet d'importer features_core.py, placé à côté de ce fichier
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+except NameError:
+    pass
+import features_core
+from features_core import DECIMALES, FEATURES_PARTIE, MANQ_MAX, SENT, nb_demi_coups, traiter_bloc
 
 # ----------------------------------------------------------------------------
 # Configuration
 # ----------------------------------------------------------------------------
-DOSSIER = r"C:\Users\gauti\OneDrive\Documents\projet_lichess\donnees"
+# Dossier des données : variable d'environnement LICHESS_DATA, sinon <racine du dépôt>/donnees
+RACINE = Path(__file__).resolve().parent.parent
+DOSSIER = os.environ.get("LICHESS_DATA", str(RACINE / "donnees"))
 FICHIER = "parties_filtrees.parquet"
 N = None                     # nombre de parties traitées ; None = toute la base
 COL_COUPS = "Moves_clean"
 COL_EVALS = "Evals"
-SORTIE = "resultats_features_v2"
+SORTIE = "resultats"
 
 BLOC_LECTURE = 100_000       # parties lues / traitées / écrites à la fois (mémoire constante)
 TAILLE_TACHE = 2_000         # parties par tâche envoyée aux processus
 REPRENDRE = True             # réutiliser les blocs déjà calculés (reprise après interruption)
-FUSIONNER = True             # fusionner les blocs en un seul fichier features_v2.parquet
+FUSIONNER = True             # fusionner les blocs en un seul fichier features.parquet
 SUPPRIMER_BLOCS = True       # supprimer les blocs après une fusion réussie
 GARDER_COUPS = True          # garder la colonne des coups (et des évaluations) dans le fichier final
 
@@ -62,7 +69,7 @@ MAX_PAR_FEUILLE = 8          # graphiques par feuille
 MAX_VALEURS = 30             # au-delà, regroupement en classes
 BINS = 30
 LOG_Y = True
-SHOW = True
+SHOW = False                 # True : ouvre les figures à l'écran (option --show) ; elles sont enregistrées dans tous les cas
 
 # Groupes de features (l'ordre est celui des graphiques, des matrices et des nuages)
 GROUPES_MAT = {
@@ -150,12 +157,12 @@ def etape(nom, chrono):
 
 
 def signature_calcul(chemin_parquet, total):
-    """Empreinte du calcul : fichier source (taille + date), code et seuils de features_core_v2.py, paramètres.
+    """Empreinte du calcul : fichier source (taille + date), code et seuils de features_core.py, paramètres.
     Les blocs ne sont repris que si l'empreinte est identique : un parquet régénéré (par exemple avec les
     évaluations) ou un seuil modifié ne peut plus réutiliser d'anciens blocs périmés."""
     st = os.stat(chemin_parquet)
     h = hashlib.md5(f"{st.st_size}|{st.st_mtime_ns}|{total}|{BLOC_LECTURE}|{GARDER_COUPS}".encode())
-    with open(features_core_v2.__file__, "rb") as f:
+    with open(features_core.__file__, "rb") as f:
         h.update(f.read())
     return h.hexdigest()[:10]
 
@@ -648,7 +655,7 @@ def _executer(dossier, fichier, n, sortie, t_debut, chrono):
     if erreurs:
         print(f"  {erreurs:,} parties illisibles (features à NaN)")
 
-    chemin_final = os.path.join(rep, "features_v2.parquet")
+    chemin_final = os.path.join(rep, "features.parquet")
     with etape("Fusion des blocs", chrono):
         if FUSIONNER:
             print("Fusion des blocs en un seul fichier...")
@@ -685,5 +692,23 @@ def _executer(dossier, fichier, n, sortie, t_debut, chrono):
         plt.show()
 
 
-if __name__ == "__main__":                                      # obligatoire sous Windows
-    main()
+def cli(argv=None):
+    global BLOC_LECTURE, SHOW
+    p = argparse.ArgumentParser(description="Calcule les features, enregistre le tableau, produit statistiques et graphiques.")
+    p.add_argument("--dossier", default=DOSSIER, help="dossier des données (défaut : %(default)s)")
+    p.add_argument("--fichier", default=FICHIER, help="parquet produit par filtrer_parties.py (défaut : %(default)s)")
+    p.add_argument("--sortie", default=SORTIE, help="sous-dossier des résultats (défaut : %(default)s)")
+    p.add_argument("--n", type=int, default=N, help="nombre de parties traitées (défaut : toutes)")
+    p.add_argument("--bloc-lecture", type=int, default=BLOC_LECTURE, help="parties par bloc (défaut : %(default)s)")
+    p.add_argument("--show", action="store_true", help="afficher les figures à l'écran")
+    a = p.parse_args(argv)
+    BLOC_LECTURE, SHOW = a.bloc_lecture, a.show
+    chemin = os.path.join(a.dossier, a.fichier)
+    if not os.path.exists(chemin):
+        sys.exit(f"Parquet introuvable : {chemin}\nLancez d'abord src/filtrer_parties.py, "
+                 "ou précisez --dossier / --fichier.")
+    main(a.dossier, a.fichier, a.n, a.sortie)
+
+
+if __name__ == "__main__":                                      # obligatoire sous Windows (multiprocessing)
+    cli()
