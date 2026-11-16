@@ -1,0 +1,623 @@
+"""
+Pipeline en flux (adapté à des millions de parties) :
+
+  Passe A  lecture de la SEULE colonne ECO (très rapide, format colonnaire) -> effectifs des codes ECO
+  Passe B  lecture du parquet par blocs ; pour chaque bloc : calcul des features en parallèle,
+           écriture d'un fichier parquet par bloc (reprise possible après interruption),
+           mise à jour d'accumulateurs légers (effectifs par valeur, moyenne/variance exactes,
+           échantillon pour les corrélations)
+  Fin      fusion des blocs en UN parquet (colonnes d'origine + features), puis statistiques et graphiques
+           calculés à partir des accumulateurs : la mémoire reste constante, quel que soit le nombre de parties.
+
+Les features d'évaluation utilisent la colonne 'Evals' écrite par filtrer_parties.py ; si elle est absente,
+elles valent NaN.
+
+Sorties dans le dossier SORTIE :
+  features_v2.parquet, resume_statistiques.csv, correlation_spearman.csv,
+  distributions_<groupe>.png, matrice_correlation.png,
+  nuages_de_points_materiel.png, nuages_de_points_evaluation.png
+"""
+import glob
+import os
+import sys
+import time
+from collections import Counter
+from concurrent.futures import ProcessPoolExecutor
+from contextlib import contextmanager
+
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as pq
+from matplotlib.patches import Patch
+
+sys.path.insert(0, r"C:\Users\gauti\OneDrive\Documents\projet_lichess\v1\scripts")   # dossier contenant features_core_v2.py
+from features_core import DECIMALES, FEATURES_PARTIE, traiter_bloc
+
+# ----------------------------------------------------------------------------
+# Configuration
+# ----------------------------------------------------------------------------
+DOSSIER = r"C:\Users\gauti\OneDrive\Documents\projet_lichess\donnees"
+FICHIER = "parties_filtrees.parquet"
+N = None                     # nombre de parties traitées ; None = toute la base
+COL_COUPS = "Moves_clean"
+COL_EVALS = "Evals"
+SORTIE = "resultats_features"
+
+BLOC_LECTURE = 100_000       # parties lues / traitées / écrites à la fois (mémoire constante)
+TAILLE_TACHE = 2_000         # parties par tâche envoyée aux processus
+REPRENDRE = True             # réutiliser les blocs déjà calculés (reprise après interruption)
+FUSIONNER = True             # fusionner les blocs en un seul fichier features_v2.parquet
+SUPPRIMER_BLOCS = True       # supprimer les blocs après une fusion réussie
+GARDER_COUPS = True          # garder la colonne des coups (et des évaluations) dans le fichier final
+
+N_ECH = 300_000              # taille de l'échantillon uniforme pour la corrélation
+N_NUAGES = 3_000             # parties SANS mat tracées dans les nuages de points
+N_PAR_PIECE = 300            # parties avec mat tracées, par pièce mateuse
+
+MAX_PAR_FEUILLE = 8          # graphiques par feuille
+MAX_VALEURS = 30             # au-delà, regroupement en classes
+BINS = 30
+LOG_Y = True
+SHOW = True
+
+# Groupes de features (l'ordre est celui des graphiques, des matrices et des nuages)
+GROUPES_MAT = {
+    "A. Complexité de la partie": ["n_plies", "elo", "rarete_ouverture"],
+    "B. Combats et fluctuations matérielles": [
+        "n_captures", "n_changements_signe", "amplitude_bal",
+        "min_bal_gagnant", "n_plies_deficit", "remontada"],
+    "C. Sacrifices et déséquilibres matériels": [
+        "n_sacrifices_dame", "n_sacrifices_pieces", "n_echanges_inegaux"],
+    "D. Activité et complexité tactique": [
+        "n_echecs", "n_captures_avec_echec", "n_promotions", "n_sous_promotions", "piece_mateuse"],
+    "E. Dynamisme de la partie": [
+        "n_coups_sans_capture_max", "n_coups_roque", "roques_opposes", "distance_roi_max",
+        "n_coups_roi", "n_pions_passes_fin"],
+}
+GROUPES_EVAL = {
+    "F. Précision du jeu (évaluation)": [
+        "acpl_gagnant", "acpl_perdant", "accuracy_gagnant", "accuracy_perdant", "part_fautes_perdant"],
+    "G. Erreurs et gaffes (évaluation)": [
+        "n_gaffes_gagnant", "n_gaffes_perdant", "n_fautes_gagnant", "n_fautes_perdant", "perte_max_gagnant"],
+    "H. Meilleurs coups et coups brillants": [
+        "n_meilleurs_gagnant", "n_meilleurs_total", "n_meilleurs_gagnant_apres10", "serie_meilleurs_gagnant",
+        "n_brillants_gagnant", "n_brillants_total"],
+    "I. Retournements d'avantage (évaluation)": [
+        "n_changements_signe_eval", "win_min_gagnant", "remontada_eval", "n_avantages_gaches",
+        "n_retournements_majeurs", "ply_decisif_rel", "part_equilibree"],
+    "J. Variations de l'évaluation": [
+        "variance_eval", "volatilite_eval", "swing_max", "n_swings_majeurs", "variation_totale",
+        "amplitude_eval"],
+    "K. Sacrifices vérifiés et mat annoncé": [
+        "n_plies_sacrifice_valide", "sacrifice_valide_max", "n_sacrifices_dame_valides",
+        "n_brillants_avec_sacrifice", "n_plies_mat_gagnant", "mat_max_annonce"],
+    "L. Phases de la partie (évaluation)": [
+        "eval_sortie_ouverture", "acpl_gagnant_milieu", "acpl_gagnant_fin", "n_gaffes_fin"],
+}
+GROUPES = {**GROUPES_MAT, **GROUPES_EVAL}
+GROUPE_MATEUSE = "M. Pièce mateuse (indicateurs 0/1)"     # groupe ajouté dans la corrélation seulement
+ORDRE = [f for fs in GROUPES.values() for f in fs]
+CATEGORIELLES = {"piece_mateuse"}
+ORDRE_NUM = [f for f in ORDRE if f not in CATEGORIELLES]
+MATERIEL_NUM = [f for fs in GROUPES_MAT.values() for f in fs if f not in CATEGORIELLES]
+GROUPE_DE = {f: g for g, fs in GROUPES.items() for f in fs}
+FLOTTANTES = set(DECIMALES) | {"elo"}                     # colonnes float32 (les autres : int32)
+INDICATEURS_MAT = {f"mat_{p}" for p in "PNBRQK"}          # indicateurs 0/1 de la pièce mateuse (corrélation)
+
+# Features d'évaluation tracées dans la matrice de nuages de points (la matrice complète serait illisible)
+NUAGES_EVAL = [
+    "acpl_gagnant", "acpl_perdant", "accuracy_gagnant", "n_gaffes_gagnant", "n_gaffes_perdant",
+    "part_fautes_perdant", "n_meilleurs_gagnant_apres10", "serie_meilleurs_gagnant", "n_brillants_gagnant",
+    "win_min_gagnant", "n_changements_signe_eval", "swing_max", "variation_totale", "ply_decisif_rel",
+    "n_plies_sacrifice_valide",
+]
+NUAGES = [("matériel et structure", MATERIEL_NUM, "nuages_de_points_materiel.png"),
+          ("évaluation", NUAGES_EVAL, "nuages_de_points_evaluation.png")]
+
+PIECES = "PNBRQK"
+NOM_PIECE = {"P": "pion", "N": "cavalier", "B": "fou", "R": "tour", "Q": "dame", "K": "roi"}
+COULEURS_PIECE = {"P": "#8c564b", "N": "#2ca02c", "B": "#1f77b4", "R": "#d62728",
+                  "Q": "#9467bd", "K": "#ff7f0e", "aucun": "#bbbbbb"}
+for p_ in PIECES:
+    GROUPE_DE[f"mat_{p_}"] = GROUPE_MATEUSE
+COULEURS_ORDRE = plt.cm.viridis(np.linspace(0.05, 0.95, 8))       # couleur par ordre de grandeur 10^0 ... 10^7
+_NOMS_GROUPES = list(GROUPES) + [GROUPE_MATEUSE]
+_PALETTE = list(plt.cm.Dark2.colors) + list(plt.cm.tab10.colors)         # couleurs foncées, lisibles sur fond blanc
+COULEURS_GROUPE = dict(zip(_NOMS_GROUPES, _PALETTE))
+
+
+# ----------------------------------------------------------------------------
+# Chronomètre
+# ----------------------------------------------------------------------------
+def fmt_duree(s):
+    h, r = divmod(int(s), 3600)
+    m, s = divmod(r, 60)
+    return f"{h}:{m:02d}:{s:02d}"
+
+
+@contextmanager
+def etape(nom, chrono):
+    """Mesure la durée d'une étape du programme."""
+    t = time.perf_counter()
+    try:
+        yield
+    finally:
+        chrono[nom] = time.perf_counter() - t
+
+
+# ----------------------------------------------------------------------------
+# Passe A : effectifs des codes ECO (lecture de cette seule colonne)
+# ----------------------------------------------------------------------------
+def compter_eco(pf, total):
+    cnt, vus = Counter(), 0
+    for b in pf.iter_batches(batch_size=500_000, columns=["ECO"]):
+        col = b.column(0)
+        if vus + len(col) > total:
+            col = col.slice(0, total - vus)
+        cnt.update(col.to_pandas().value_counts().to_dict())
+        vus += len(col)
+        if vus >= total:
+            break
+    return pd.Series(cnt, dtype="float64")
+
+
+# ----------------------------------------------------------------------------
+# Passe B : calcul d'un bloc
+# ----------------------------------------------------------------------------
+def _neutraliser_main_temporaire():
+    """Script lancé depuis un tampon temporaire (ex. '<tmp 10>') : Windows ne peut pas le réimporter
+    dans les processus enfants ; on masque son nom de fichier."""
+    import __main__
+    f = getattr(__main__, "__file__", None)
+    if f is not None and not os.path.exists(f):
+        del __main__.__file__
+
+
+def calculer_features_bloc(batch, ex):
+    coups = batch.column(COL_COUPS).to_pylist()
+    resultats = batch.column("Result").to_pylist()
+    evals = batch.column(COL_EVALS).to_pylist() if COL_EVALS in batch.schema.names else [None] * len(coups)
+    taches = list(zip(coups, resultats, evals))
+    sous = [taches[i:i + TAILLE_TACHE] for i in range(0, len(taches), TAILLE_TACHE)]
+    lignes, erreurs = [], 0
+    for out, e in ex.map(traiter_bloc, sous):
+        lignes.extend(out)
+        erreurs += e
+    return pd.DataFrame(lignes, columns=FEATURES_PARTIE), erreurs
+
+
+_AVERTI_ELO = False
+
+
+def ajouter_elo_rarete(feat, batch, eco_counts):
+    """elo = moyenne des Elo des deux joueurs ; rarete_ouverture = nombre de parties de même code ECO."""
+    global _AVERTI_ELO
+    noms = batch.schema.names
+    if "elo" in noms:
+        elo = pd.to_numeric(batch.column("elo").to_pandas(), errors="coerce")
+    elif "WhiteElo" in noms and "BlackElo" in noms:
+        elo = (pd.to_numeric(batch.column("WhiteElo").to_pandas(), errors="coerce")
+               + pd.to_numeric(batch.column("BlackElo").to_pandas(), errors="coerce")) / 2
+    else:
+        if not _AVERTI_ELO:
+            print("  ATTENTION : ni 'elo' ni WhiteElo/BlackElo dans le parquet -> elo = NaN")
+            _AVERTI_ELO = True
+        elo = pd.Series(np.nan, index=range(len(feat)))
+    feat["elo"] = elo.to_numpy(float)
+    feat["rarete_ouverture"] = batch.column("ECO").to_pandas().map(eco_counts).to_numpy(float)
+    return feat
+
+
+def en_arrow(serie, nom):
+    """Colonne de features -> tableau Arrow à type FIXE (schéma identique d'un bloc à l'autre)."""
+    if nom == "piece_mateuse":
+        return pa.array(serie.tolist(), type=pa.string())
+    if nom in FLOTTANTES:
+        return pa.array(serie.to_numpy(float), type=pa.float32(), from_pandas=True)
+    return pa.array(serie.to_numpy(float), type=pa.int32(), from_pandas=True)
+
+
+def table_complete(batch, feat):
+    """Colonnes d'origine + features, dans l'ordre des groupes."""
+    t = pa.Table.from_batches([batch])
+    retirer = set(ORDRE) | (set() if GARDER_COUPS else {COL_COUPS, COL_EVALS})
+    t = t.select([c for c in t.column_names if c not in retirer])
+    for f in ORDRE:
+        t = t.append_column(f, en_arrow(feat[f], f))
+    return t
+
+
+# ----------------------------------------------------------------------------
+# Accumulateurs (mémoire constante)
+# ----------------------------------------------------------------------------
+class Accumulateur:
+    """Par feature : effectifs par valeur (histogrammes, quantiles), moyenne et variance EXACTES (fusion
+    de blocs par la formule de Chan) ; effectifs des pièces mateuses ; échantillon uniforme (corrélation) ;
+    ensemble des parties avec mat (nuages colorés). Les features décimales sont arrondies (DECIMALES)
+    avant comptage pour regrouper les valeurs."""
+
+    def __init__(self, total):
+        self.cnt = {f: Counter() for f in ORDRE_NUM}
+        self.st = {f: [0, 0.0, 0.0] for f in ORDRE_NUM}          # [n, moyenne, M2]
+        self.pieces = Counter()
+        self.p = min(1.0, N_ECH / total)
+        self.rng = np.random.default_rng(0)
+        self.ech, self.mats = [], []
+
+    def ajouter(self, feat):
+        for f in ORDRE_NUM:
+            col = feat[f]
+            v = col.to_numpy(float)
+            v = v[~np.isnan(v)]
+            if v.size:                                           # fusion exacte des moments
+                n, m, m2 = self.st[f]
+                nb, mb = v.size, v.mean()
+                tot, delta = n + nb, mb - m
+                self.st[f] = [tot, m + delta * nb / tot,
+                              m2 + ((v - mb) ** 2).sum() + delta ** 2 * n * nb / tot]
+            d = DECIMALES.get(f)
+            self.cnt[f].update((col.round(d) if d is not None else col).value_counts().to_dict())
+        piece = feat["piece_mateuse"].fillna("")
+        self.pieces.update(piece.replace("", "aucun").value_counts().to_dict())
+        sub = feat[ORDRE_NUM].astype("float32")
+        sub["piece_mateuse"] = piece.to_numpy()
+        self.ech.append(sub[self.rng.random(len(sub)) < self.p])
+        self.mats.append(sub[sub["piece_mateuse"] != ""])
+
+    def comptes(self, f):
+        return pd.Series(self.cnt[f], dtype="float64").sort_index()
+
+    def stat(self, f):
+        """(n, moyenne, variance) exacts."""
+        n, m, m2 = self.st[f]
+        return n, m, (m2 / (n - 1) if n > 1 else float("nan"))
+
+
+# ----------------------------------------------------------------------------
+# Visualisation 1 : distributions (un graphique par feature, 8 par feuille, groupées)
+# ----------------------------------------------------------------------------
+def enregistrer(fig, chemin, dpi):
+    fig.savefig(chemin, dpi=dpi)
+    if not SHOW:
+        plt.close(fig)
+
+
+def dessiner_barres(ax, gauche, larg, cnt):
+    """Barres colorées par ordre de grandeur de l'effectif + annotations + légende."""
+    centres = gauche + larg / 2
+    ordres = np.floor(np.log10(cnt)).astype(int)
+    ax.bar(gauche, cnt, width=larg, align="edge", edgecolor="k", linewidth=0.3,
+           color=[COULEURS_ORDRE[min(k, 7)] for k in ordres])
+    if len(cnt) <= 16:
+        for c, n_, k in zip(centres, cnt, ordres):
+            ax.annotate(f"$10^{{{k}}}$", (c, n_), xytext=(0, 2), textcoords="offset points",
+                        ha="center", fontsize=7)
+    if LOG_Y:                                                   # marge en haut pour annotations + légende
+        ax.set_yscale("log")
+        ax.set_ylim(0.7, cnt.max() * 10 ** 2.0)
+    else:
+        ax.set_ylim(0, cnt.max() * 1.7)
+    handles = [Patch(facecolor=COULEURS_ORDRE[min(k, 7)], edgecolor="k", label=f"$10^{{{k}}}$")
+               for k in sorted(set(ordres))]
+    ax.legend(handles=handles, title="ordre de grandeur de l'effectif", fontsize=7, title_fontsize=7,
+              ncol=min(4, len(handles)), loc="upper center", framealpha=0.9)
+    ax.set_ylabel("effectif" + (" (échelle log)" if LOG_Y else ""), fontsize=8)
+    ax.tick_params(labelsize=8)
+
+
+def tracer_categorielle(ax, comptes, nom):
+    """Histogramme de piece_mateuse ('aucun' = pas de mat) ; étiquettes colorées par pièce."""
+    vc = pd.Series(comptes, dtype="float64").sort_values(ascending=False)
+    if vc.empty:
+        ax.text(0.5, 0.5, "aucune donnée", ha="center", va="center", transform=ax.transAxes)
+        return
+    dessiner_barres(ax, np.arange(len(vc)) - 0.4, np.full(len(vc), 0.8), vc.to_numpy())
+    ax.set_xticks(range(len(vc)), vc.index)
+    for lab in ax.get_xticklabels():
+        lab.set_color(COULEURS_PIECE.get(lab.get_text(), "k"))
+        lab.set_fontweight("bold")
+    ax.tick_params(axis="x", labelsize=10)
+    part = 100 * (1 - vc.get("aucun", 0) / vc.sum())
+    ax.set_title(f"{nom}\n{part:.1f} % des parties finissent par un mat   (n={int(vc.sum()):,})", fontsize=10)
+    ax.set_xlabel("pièce qui donne le mat (P pion, N cavalier, B fou, R tour, Q dame, K roi)", fontsize=8)
+
+
+def tracer_distribution(ax, vc, nom, stat):
+    """vc : Series {valeur: effectif} triée par valeur ; stat : (n, moyenne, variance) exacts."""
+    if vc.empty:
+        ax.text(0.5, 0.5, "aucune donnée (évaluations absentes ?)", ha="center", va="center",
+                transform=ax.transAxes, fontsize=9)
+        ax.set_title(nom, fontsize=11)
+        return
+    v, c = vc.index.to_numpy(float), vc.to_numpy(float)
+    entier = bool(np.all(v % 1 == 0))
+    etendue = v.max() - v.min() + 1
+    if len(v) <= MAX_VALEURS or (entier and etendue <= 60):        # une barre par valeur
+        pas = np.diff(v).min() if len(v) > 1 else 1.0
+        gauche, larg, cnt = v - 0.4 * pas, np.full(len(v), 0.8 * pas), c
+    else:                                                          # classes
+        if entier and v.min() > 0 and v.max() / v.min() > 100:     # compteur à grande étendue : classes log
+            bords = np.logspace(np.log10(v.min()), np.log10(v.max()), BINS + 1)
+            ax.set_xscale("log")
+            aff = bords
+        elif entier:                                               # classes de largeur entière
+            w = int(np.ceil(etendue / BINS))
+            bords = np.arange(v.min(), v.max() + w + 1, w)
+            aff = bords - 0.5
+        else:
+            bords = np.linspace(v.min(), v.max(), BINS + 1)
+            aff = bords
+        cnt, _ = np.histogram(v, bins=bords, weights=c)
+        ok = cnt > 0
+        gauche, larg, cnt = aff[:-1][ok], np.diff(aff)[ok], cnt[ok]
+    dessiner_barres(ax, gauche, larg, cnt)
+    n, moy, var = stat
+    ax.set_title(f"{nom}\nmoy={moy:.3g}   var={var:.3g}   (n={int(n):,})", fontsize=10)
+    ax.set_xlabel("valeur de la feature", fontsize=8)
+
+
+def tracer_feuilles(acc, dossier_sortie):
+    for g, feats in GROUPES.items():
+        lettre = g[0]
+        for p in range(0, len(feats), MAX_PAR_FEUILLE):
+            sous = feats[p:p + MAX_PAR_FEUILLE]
+            nlig = 1 if len(sous) <= 4 else 2                      # feuille compacte si <= 4 graphiques
+            fig, axes = plt.subplots(nlig, 4, figsize=(27, 6.8 * nlig + 1))
+            axes = axes.ravel()
+            for ax, f in zip(axes, sous):
+                if f in CATEGORIELLES:
+                    tracer_categorielle(ax, acc.pieces, f)
+                else:
+                    tracer_distribution(ax, acc.comptes(f), f, acc.stat(f))
+            for ax in axes[len(sous):]:
+                ax.axis("off")
+            suffixe = f"_{p // MAX_PAR_FEUILLE + 1}" if len(feats) > MAX_PAR_FEUILLE else ""
+            fig.suptitle(g + suffixe.replace("_", " (feuille ") + (")" if suffixe else ""), fontsize=15)
+            fig.tight_layout(h_pad=5, w_pad=4, rect=(0, 0, 1, 0.95))
+            enregistrer(fig, os.path.join(dossier_sortie, f"distributions_{lettre}{suffixe}.png"), 100)
+
+
+# ----------------------------------------------------------------------------
+# Statistiques exactes
+# ----------------------------------------------------------------------------
+def resume_statistiques(acc):
+    lignes = {}
+    for f in ORDRE_NUM:
+        vc = acc.comptes(f)
+        n, moy, var = acc.stat(f)
+        if vc.empty:
+            lignes[f] = dict(groupe=GROUPE_DE[f], n_valides=0)
+            continue
+        v, c = vc.index.to_numpy(float), vc.to_numpy(float)
+        cum = np.cumsum(c) / c.sum()
+        lignes[f] = dict(groupe=GROUPE_DE[f], n_valides=int(n), moyenne=moy, variance=var,
+                         min=v[0], mediane=v[np.searchsorted(cum, 0.5)],
+                         q99=v[min(np.searchsorted(cum, 0.99), len(v) - 1)], max=v[-1])
+    return pd.DataFrame.from_dict(lignes, orient="index")
+
+
+# ----------------------------------------------------------------------------
+# Visualisation 2 : matrice de corrélation (Spearman), piece_mateuse en indicateurs colorés
+# ----------------------------------------------------------------------------
+def separateurs_de_groupes(ok):
+    deb = {}
+    for i, f in enumerate(ok):
+        deb.setdefault(GROUPE_DE[f], i)
+    return deb
+
+
+def tracer_correlation(ech, chemin_png, chemin_csv):
+    num = ech[ORDRE_NUM].astype(float)
+    for p in PIECES:                                            # indicateurs 0/1 : la pièce a-t-elle donné le mat ?
+        num[f"mat_{p}"] = (ech["piece_mateuse"] == p).astype(float)
+    candidats = ORDRE_NUM + [f"mat_{p}" for p in PIECES]
+    ok = [f for f in candidats if num[f].nunique(dropna=True) > 1]
+    for f in set(candidats) - set(ok):
+        print(f"  (feature constante ou vide, ignorée pour la corrélation : {f})")
+    # Spearman = Pearson des rangs (rangs moyens pour les égalités), rangs calculés une fois par colonne
+    corr = num[ok].rank().corr()
+    corr.to_csv(chemin_csv)
+
+    k = len(ok)
+    cellule, police = (0.75, 6.5) if k <= 30 else (0.55, 5)      # cellules plus petites si beaucoup de features
+    fig, ax = plt.subplots(figsize=(cellule * k + 4, cellule * k + 3.5))
+    im = ax.imshow(corr.values, cmap="coolwarm", vmin=-1, vmax=1)
+    ax.set_xticks(range(k), ok, rotation=70, ha="right", fontsize=9)
+    ax.set_yticks(range(k), ok, fontsize=9)
+    for lab in ax.get_xticklabels() + ax.get_yticklabels():     # couleur de la pièce sur les indicateurs
+        if lab.get_text() in INDICATEURS_MAT:
+            lab.set_color(COULEURS_PIECE[lab.get_text()[-1]])
+            lab.set_fontweight("bold")
+    for i in range(k):
+        for j in range(k):
+            v = corr.values[i, j]
+            if not np.isnan(v):
+                ax.text(j, i, f"{v:.2f}", ha="center", va="center", fontsize=police,
+                        color="white" if abs(v) > 0.6 else "black")
+    for g, i in separateurs_de_groupes(ok).items():             # traits de séparation + lettre du groupe
+        fin = max(j for j, f in enumerate(ok) if GROUPE_DE[f] == g)
+        if i > 0:
+            ax.axhline(i - 0.5, color="k", lw=1.5)
+            ax.axvline(i - 0.5, color="k", lw=1.5)
+        ax.text(k - 0.2, (i + fin) / 2, g[0], fontsize=14, fontweight="bold",
+                color=COULEURS_GROUPE[g], ha="left", va="center")
+    fig.colorbar(im, ax=ax, fraction=0.04, pad=0.06)
+    ax.set_title(f"Corrélation de Spearman ({len(ech):,} parties ; lettres = groupes A à L, "
+                 "M = indicateurs de la pièce mateuse)", fontsize=12)
+    fig.tight_layout()
+    enregistrer(fig, chemin_png, 100)
+
+
+# ----------------------------------------------------------------------------
+# Visualisation 3 : nuages de points, colorés par pièce mateuse
+# ----------------------------------------------------------------------------
+def tracer_nuages(acc, features, titre, chemin_png):
+    ech = pd.concat(acc.ech)
+    mats = pd.concat(acc.mats)
+    sans = ech[ech["piece_mateuse"] == ""]
+    sans = sans.sample(min(N_NUAGES, len(sans)), random_state=0)
+    avec = mats.sample(frac=1, random_state=0).groupby("piece_mateuse").head(N_PAR_PIECE)
+    jeu = pd.concat([sans, avec])
+    ok = [f for f in features if jeu[f].nunique(dropna=True) > 1]
+    if len(ok) < 2:
+        print(f"  (nuages '{titre}' ignorés : moins de 2 features exploitables)")
+        return
+    k = len(ok)
+
+    X = jeu[ok].to_numpy(float)
+    rng = np.random.default_rng(0)
+    for j, f in enumerate(ok):                                  # léger bruit pour les variables discrètes
+        if jeu[f].nunique() <= MAX_VALEURS:
+            X[:, j] += rng.uniform(-0.2, 0.2, len(X))
+    piece = jeu["piece_mateuse"].to_numpy()
+    est_mat = piece != ""
+    coul = np.array([COULEURS_PIECE.get(p, COULEURS_PIECE["aucun"]) for p in piece])
+
+    fig, axes = plt.subplots(k, k, figsize=(1.0 * k + 2, 1.0 * k + 2), squeeze=False)
+    for i in range(k):
+        for j in range(k):
+            ax = axes[i, j]
+            if j > i:
+                ax.axis("off")
+                continue
+            if i == j:                                          # diagonale : nom de la feature
+                ax.text(0.5, 0.5, ok[i].replace("_", "\n"), ha="center", va="center", fontsize=6.5,
+                        color=COULEURS_GROUPE[GROUPE_DE[ok[i]]], fontweight="bold", transform=ax.transAxes)
+                ax.set_xticks([]); ax.set_yticks([])
+            else:
+                ax.scatter(X[~est_mat, j], X[~est_mat, i], s=1.5, alpha=0.25, c=coul[~est_mat],
+                           rasterized=True, linewidths=0)       # parties sans mat (gris)
+                ax.scatter(X[est_mat, j], X[est_mat, i], s=4, alpha=0.6, c=coul[est_mat],
+                           rasterized=True, linewidths=0)       # parties avec mat (couleur de la pièce)
+                ax.tick_params(labelbottom=False, labelleft=False, length=1.5)
+            if i == k - 1:
+                ax.set_xlabel(ok[j], fontsize=6.5, rotation=75, labelpad=3)
+            if j == 0:
+                ax.set_ylabel(ok[i], fontsize=6.5, rotation=0, ha="right", va="center", labelpad=3)
+    handles = [Patch(color=COULEURS_PIECE[p], label=f"mat par {NOM_PIECE[p]} ({p})")
+               for p in PIECES if (piece == p).any()]
+    handles.append(Patch(color=COULEURS_PIECE["aucun"], label="pas de mat"))
+    fig.legend(handles=handles, loc="upper right", fontsize=11, title="pièce mateuse", title_fontsize=12,
+               bbox_to_anchor=(0.97, 0.97))
+    fig.suptitle(f"Nuages de points : {titre} ({len(sans):,} parties sans mat tirées au hasard + "
+                 f"jusqu'à {N_PAR_PIECE} parties par pièce mateuse)", fontsize=14)
+    fig.tight_layout(rect=(0, 0, 1, 0.98), h_pad=0.3, w_pad=0.3)
+    enregistrer(fig, chemin_png, 110)
+
+
+# ----------------------------------------------------------------------------
+# Fusion des blocs
+# ----------------------------------------------------------------------------
+def fusionner_blocs(rep_blocs, chemin_final):
+    fichiers = sorted(glob.glob(os.path.join(rep_blocs, "bloc_*.parquet")))
+    schema = pq.ParquetFile(fichiers[0]).schema_arrow
+    with pq.ParquetWriter(chemin_final, schema) as w:
+        for f in fichiers:
+            for b in pq.ParquetFile(f).iter_batches(batch_size=50_000):
+                w.write_batch(b)
+    return fichiers
+
+
+# ----------------------------------------------------------------------------
+# Programme principal
+# ----------------------------------------------------------------------------
+def main(dossier=DOSSIER, fichier=FICHIER, n=N, sortie=SORTIE):
+    t_debut = time.perf_counter()
+    chrono = {}
+    try:
+        _executer(dossier, fichier, n, sortie, t_debut, chrono)
+    finally:                                                    # affiché même en cas d'interruption
+        print("\n=== Durées ===")
+        for nom, s in chrono.items():
+            print(f"  {nom:<34s} {fmt_duree(s)}")
+        print(f"  {'TEMPS TOTAL':<34s} {fmt_duree(time.perf_counter() - t_debut)}")
+
+
+def _executer(dossier, fichier, n, sortie, t_debut, chrono):
+    rep = os.path.join(dossier, sortie)
+    rep_blocs = os.path.join(rep, "blocs")
+    os.makedirs(rep_blocs, exist_ok=True)
+
+    pf = pq.ParquetFile(os.path.join(dossier, fichier))
+    total = pf.metadata.num_rows if n is None else min(n, pf.metadata.num_rows)
+    print(f"{total:,} parties à traiter, par blocs de {BLOC_LECTURE:,}")
+    if COL_EVALS not in pf.schema_arrow.names:
+        print(f"  ATTENTION : colonne '{COL_EVALS}' absente du parquet -> features d'évaluation à NaN "
+              "(relancer filtrer_parties.py pour extraire les évaluations).")
+
+    print("Passe A : effectifs des codes ECO...")
+    with etape("Passe A (codes ECO)", chrono):
+        eco_counts = compter_eco(pf, total)
+
+    print("Passe B : calcul des features, bloc par bloc...")
+    acc, vus, erreurs, t0 = Accumulateur(total), 0, 0, time.perf_counter()
+    colonnes_attendues = set(ORDRE)
+    with etape("Passe B (calcul des features)", chrono):
+        _neutraliser_main_temporaire()
+        with ProcessPoolExecutor() as ex:
+            for k, batch in enumerate(pf.iter_batches(batch_size=BLOC_LECTURE), start=1):
+                if vus + batch.num_rows > total:
+                    batch = batch.slice(0, total - vus)
+                chemin_bloc = os.path.join(rep_blocs, f"bloc_{k:06d}.parquet")
+
+                deja = False
+                if REPRENDRE and os.path.exists(chemin_bloc):   # bloc valide : même nombre de lignes, mêmes colonnes
+                    pfb = pq.ParquetFile(chemin_bloc)
+                    deja = (pfb.metadata.num_rows == batch.num_rows
+                            and colonnes_attendues <= set(pfb.schema_arrow.names))
+                if deja:                                        # bloc déjà calculé : on relit ses features
+                    feat = pq.read_table(chemin_bloc, columns=ORDRE).to_pandas()
+                else:
+                    feat, e = calculer_features_bloc(batch, ex)
+                    erreurs += e
+                    feat = ajouter_elo_rarete(feat, batch, eco_counts)
+                    pq.write_table(table_complete(batch, feat), chemin_bloc + ".tmp")
+                    os.replace(chemin_bloc + ".tmp", chemin_bloc)   # écriture atomique : pas de bloc à moitié écrit
+                acc.ajouter(feat)
+
+                vus += batch.num_rows
+                dt = time.perf_counter() - t0
+                print(f"  bloc {k} ({'repris' if deja else 'calculé'}) : {vus:,}/{total:,} parties, "
+                      f"{vus / dt:,.0f}/s | écoulé {fmt_duree(time.perf_counter() - t_debut)}"
+                      f" | reste ~{fmt_duree((total - vus) / (vus / dt))}")
+                if vus >= total:
+                    break
+    if erreurs:
+        print(f"  {erreurs:,} parties illisibles (features à NaN)")
+
+    chemin_final = os.path.join(rep, "features_v2.parquet")
+    with etape("Fusion des blocs", chrono):
+        if FUSIONNER:
+            print("Fusion des blocs en un seul fichier...")
+            fichiers = fusionner_blocs(rep_blocs, chemin_final)
+            print(f"  DataFrame complet enregistré : {chemin_final}")
+            if SUPPRIMER_BLOCS:
+                for f in fichiers:
+                    os.remove(f)
+                os.rmdir(rep_blocs)
+        else:
+            print(f"  DataFrame enregistré par blocs dans : {rep_blocs}  "
+                  "(pd.read_parquet(dossier) le relit en entier)")
+
+    with etape("Statistiques et graphiques", chrono):
+        resume = resume_statistiques(acc)
+        resume.to_csv(os.path.join(rep, "resume_statistiques.csv"))
+        pd.set_option("display.width", 220, "display.max_rows", None)
+        print("\n" + resume.drop(columns="groupe").round(3).to_string())
+        print("\npiece_mateuse (effectifs) :\n" + pd.Series(acc.pieces).sort_values(ascending=False).to_string())
+
+        print("\nGraphiques...")
+        tracer_feuilles(acc, rep)
+        tracer_correlation(pd.concat(acc.ech), os.path.join(rep, "matrice_correlation.png"),
+                           os.path.join(rep, "correlation_spearman.csv"))
+        for titre, features, nom_png in NUAGES:
+            tracer_nuages(acc, features, titre, os.path.join(rep, nom_png))
+        print(f"Fichiers écrits dans {rep}")
+    if SHOW:
+        plt.show()
+
+
+if __name__ == "__main__":                                      # obligatoire sous Windows
+    main()
