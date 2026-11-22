@@ -136,6 +136,144 @@ _NOMS_GROUPES = list(GROUPES) + [GROUPE_MATEUSE]
 _PALETTE = list(plt.cm.Dark2.colors) + list(plt.cm.tab10.colors)         # couleurs foncées, lisibles sur fond blanc
 COULEURS_GROUPE = dict(zip(_NOMS_GROUPES, _PALETTE))
 
+"""
+Pipeline en flux (adapté à des millions de parties) :
+
+  Passe A  lecture de la SEULE colonne ECO (très rapide, format colonnaire) -> effectifs des codes ECO
+  Passe B  lecture du parquet par blocs ; pour chaque bloc : calcul des features en parallèle,
+           écriture d'un fichier parquet par bloc (reprise possible après interruption),
+           mise à jour d'accumulateurs légers (effectifs par valeur, moyenne/variance exactes,
+           échantillon pour les corrélations)
+  Fin      fusion des blocs en UN parquet (colonnes d'origine + features), puis statistiques et graphiques
+           calculés à partir des accumulateurs : la mémoire reste constante, quel que soit le nombre de parties.
+
+Les features d'évaluation utilisent la colonne 'Evals' écrite par filtrer_parties.py ; si elle est absente,
+elles valent NaN.
+
+Sorties dans le dossier SORTIE :
+  features.parquet, resume_statistiques.csv, correlation_spearman.csv,
+  distributions_<groupe>.png, matrice_correlation.png,
+  nuages_de_points_materiel.png, nuages_de_points_evaluation.png
+"""
+import argparse
+import glob
+import hashlib
+import os
+import sys
+import time
+from collections import Counter
+from concurrent.futures import ProcessPoolExecutor
+from contextlib import contextmanager
+from pathlib import Path
+
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as pq
+from matplotlib.patches import Patch
+
+try:                                                 # permet d'importer features_core.py, placé à côté de ce fichier
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+except NameError:
+    pass
+import features_core
+from features_core import DECIMALES, FEATURES_PARTIE, MANQ_MAX, SENT, nb_demi_coups, traiter_bloc
+
+# ----------------------------------------------------------------------------
+# Configuration
+# ----------------------------------------------------------------------------
+# Dossier des données : variable d'environnement LICHESS_DATA, sinon <racine du dépôt>/donnees
+RACINE = Path(__file__).resolve().parent.parent
+DOSSIER = os.environ.get("LICHESS_DATA", str(RACINE / "donnees"))
+FICHIER = "parties_filtrees.parquet"
+N = None                     # nombre de parties traitées ; None = toute la base
+COL_COUPS = "Moves_clean"
+COL_EVALS = "Evals"
+SORTIE = "resultats"
+
+BLOC_LECTURE = 100_000       # parties lues / traitées / écrites à la fois (mémoire constante)
+TAILLE_TACHE = 2_000         # parties par tâche envoyée aux processus
+REPRENDRE = True             # réutiliser les blocs déjà calculés (reprise après interruption)
+FUSIONNER = True             # fusionner les blocs en un seul fichier features.parquet
+SUPPRIMER_BLOCS = True       # supprimer les blocs après une fusion réussie
+GARDER_COUPS = True          # garder la colonne des coups (et des évaluations) dans le fichier final
+
+N_ECH = 300_000              # taille de l'échantillon uniforme pour la corrélation
+N_NUAGES = 3_000             # parties SANS mat tracées dans les nuages de points
+N_PAR_PIECE = 300            # parties avec mat tracées, par pièce mateuse
+
+MAX_PAR_FEUILLE = 8          # graphiques par feuille
+MAX_VALEURS = 30             # au-delà, regroupement en classes
+BINS = 30
+LOG_Y = True
+SHOW = False                 # True : ouvre les figures à l'écran (option --show) ; elles sont enregistrées dans tous les cas
+
+# Groupes de features (l'ordre est celui des graphiques, des matrices et des nuages)
+GROUPES_MAT = {
+    "A. Complexité de la partie": ["n_plies", "elo", "rarete_ouverture"],
+    "B. Combats et fluctuations matérielles": [
+        "n_captures", "n_changements_signe", "amplitude_bal",
+        "min_bal_gagnant", "n_plies_deficit", "remontada"],
+    "C. Sacrifices et déséquilibres matériels": [
+        "n_sacrifices_dame", "n_sacrifices_pieces", "n_echanges_inegaux"],
+    "D. Activité et complexité tactique": [
+        "n_echecs", "n_captures_avec_echec", "n_promotions", "n_sous_promotions", "piece_mateuse"],
+    "E. Dynamisme de la partie": [
+        "n_coups_sans_capture_max", "n_coups_roque", "roques_opposes", "distance_roi_max",
+        "n_coups_roi", "n_pions_passes_fin"],
+}
+GROUPES_EVAL = {
+    "F. Précision du jeu (évaluation)": [
+        "acpl_gagnant", "acpl_perdant", "accuracy_gagnant", "accuracy_perdant", "part_fautes_perdant"],
+    "G. Erreurs et gaffes (évaluation)": [
+        "n_gaffes_gagnant", "n_gaffes_perdant", "n_fautes_gagnant", "n_fautes_perdant", "perte_max_gagnant"],
+    "H. Meilleurs coups et coups brillants": [
+        "n_meilleurs_gagnant", "n_meilleurs_total", "n_meilleurs_gagnant_apres10", "serie_meilleurs_gagnant",
+        "n_brillants_gagnant", "n_brillants_total"],
+    "I. Retournements d'avantage (évaluation)": [
+        "n_changements_signe_eval", "win_min_gagnant", "remontada_eval", "n_avantages_gaches",
+        "n_retournements_majeurs", "ply_decisif_rel", "part_equilibree"],
+    "J. Variations de l'évaluation": [
+        "variance_eval", "volatilite_eval", "swing_max", "n_swings_majeurs", "variation_totale",
+        "amplitude_eval"],
+    "K. Sacrifices vérifiés et mat annoncé": [
+        "n_plies_sacrifice_valide", "sacrifice_valide_max", "n_sacrifices_dame_valides",
+        "n_brillants_avec_sacrifice", "n_plies_mat_gagnant", "mat_max_annonce"],
+    "L. Phases de la partie (évaluation)": [
+        "eval_sortie_ouverture", "acpl_gagnant_milieu", "acpl_gagnant_fin", "n_gaffes_fin"],
+}
+GROUPES = {**GROUPES_MAT, **GROUPES_EVAL}
+GROUPE_MATEUSE = "M. Pièce mateuse (indicateurs 0/1)"     # groupe ajouté dans la corrélation seulement
+ORDRE = [f for fs in GROUPES.values() for f in fs]
+CATEGORIELLES = {"piece_mateuse"}
+ORDRE_NUM = [f for f in ORDRE if f not in CATEGORIELLES]
+MATERIEL_NUM = [f for fs in GROUPES_MAT.values() for f in fs if f not in CATEGORIELLES]
+GROUPE_DE = {f: g for g, fs in GROUPES.items() for f in fs}
+FLOTTANTES = set(DECIMALES) | {"elo"}                     # colonnes float32 (les autres : int32)
+INDICATEURS_MAT = {f"mat_{p}" for p in "PNBRQK"}          # indicateurs 0/1 de la pièce mateuse (corrélation)
+
+# Features d'évaluation tracées dans la matrice de nuages de points (la matrice complète serait illisible)
+NUAGES_EVAL = [
+    "acpl_gagnant", "acpl_perdant", "accuracy_gagnant", "n_gaffes_gagnant", "n_gaffes_perdant",
+    "part_fautes_perdant", "n_meilleurs_gagnant_apres10", "serie_meilleurs_gagnant", "n_brillants_gagnant",
+    "win_min_gagnant", "n_changements_signe_eval", "swing_max", "variation_totale", "ply_decisif_rel",
+    "n_plies_sacrifice_valide",
+]
+NUAGES = [("matériel et structure", MATERIEL_NUM, "nuages_de_points_materiel.png"),
+          ("évaluation", NUAGES_EVAL, "nuages_de_points_evaluation.png")]
+
+PIECES = "PNBRQK"
+NOM_PIECE = {"P": "pion", "N": "cavalier", "B": "fou", "R": "tour", "Q": "dame", "K": "roi"}
+COULEURS_PIECE = {"P": "#8c564b", "N": "#2ca02c", "B": "#1f77b4", "R": "#d62728",
+                  "Q": "#9467bd", "K": "#ff7f0e", "aucun": "#bbbbbb"}
+for p_ in PIECES:
+    GROUPE_DE[f"mat_{p_}"] = GROUPE_MATEUSE
+COULEURS_ORDRE = plt.cm.viridis(np.linspace(0.05, 0.95, 8))       # couleur par ordre de grandeur 10^0 ... 10^7
+_NOMS_GROUPES = list(GROUPES) + [GROUPE_MATEUSE]
+_PALETTE = list(plt.cm.Dark2.colors) + list(plt.cm.tab10.colors)         # couleurs foncées, lisibles sur fond blanc
+COULEURS_GROUPE = dict(zip(_NOMS_GROUPES, _PALETTE))
+
 
 # ----------------------------------------------------------------------------
 # Chronomètre
