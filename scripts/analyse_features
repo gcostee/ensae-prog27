@@ -138,23 +138,6 @@ _PALETTE = list(plt.cm.Dark2.colors) + list(plt.cm.tab10.colors)         # coule
 COULEURS_GROUPE = dict(zip(_NOMS_GROUPES, _PALETTE))
 
 
-BLOC_LECTURE = 100_000       # parties lues / traitées / écrites à la fois (mémoire constante)
-TAILLE_TACHE = 2_000         # parties par tâche envoyée aux processus
-REPRENDRE = True             # réutiliser les blocs déjà calculés (reprise après interruption)
-FUSIONNER = True             # fusionner les blocs en un seul fichier features.parquet
-SUPPRIMER_BLOCS = True       # supprimer les blocs après une fusion réussie
-GARDER_COUPS = True          # garder la colonne des coups (et des évaluations) dans le fichier final
-
-N_ECH = 300_000              # taille de l'échantillon uniforme pour la corrélation
-N_NUAGES = 3_000             # parties SANS mat tracées dans les nuages de points
-N_PAR_PIECE = 300            # parties avec mat tracées, par pièce mateuse
-
-MAX_PAR_FEUILLE = 8          # graphiques par feuille
-MAX_VALEURS = 30             # au-delà, regroupement en classes
-BINS = 30
-LOG_Y = True
-SHOW = False                 # True : ouvre les figures à l'écran (option --show) ; elles sont enregistrées dans tous les cas
-
 # ----------------------------------------------------------------------------
 # Chronomètre
 # ----------------------------------------------------------------------------
