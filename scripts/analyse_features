@@ -65,11 +65,7 @@ N_ECH = 300_000              # taille de l'échantillon uniforme pour la corrél
 N_NUAGES = 3_000             # parties SANS mat tracées dans les nuages de points
 N_PAR_PIECE = 300            # parties avec mat tracées, par pièce mateuse
 
-MAX_PAR_FEUILLE = 8          # graphiques par feuille
-MAX_VALEURS = 30             # au-delà, regroupement en classes
-BINS = 30
-LOG_Y = True
-SHOW = False                 # True : ouvre les figures à l'écran (option --show) ; elles sont enregistrées dans tous les cas
+
 
 
 
