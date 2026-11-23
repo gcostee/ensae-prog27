@@ -151,6 +151,20 @@ def valeur_eval(commentaire):
         return SENT
 
 
+def extraire_evals(ligne):
+    """Une évaluation par demi-coup (SENT si le coup n'a pas d'évaluation), en octets int16 natifs.
+    Chaque commentaire annote le coup qui le précède ; les commentaires supplémentaires (texte d'analyse)
+    et les variations sont ignorés ; les coups sans commentaire reçoivent SENT."""
+    ligne = sans_variations(ligne)
+    vals, pos = [], 0
+    for m in _RE_COM.finditer(ligne):
+        n = nb_coups_texte(ligne[pos:m.start()])
+        pos = m.end()
+        if n:
+            vals.extend([SENT] * (n - 1))
+            vals.append(valeur_eval(m.group(1)))
+    vals.extend([SENT] * nb_coups_texte(ligne[pos:]))
+    return array("h", vals).tobytes()
 
 
 # ----------------------------------------------------------------------------
