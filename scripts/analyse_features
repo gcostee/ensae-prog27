@@ -516,27 +516,7 @@ def tracer_correlation(ech, chemin_png, chemin_csv):
 # ----------------------------------------------------------------------------
 # Visualisation 3 : nuages de points, colorés par pièce mateuse
 # ----------------------------------------------------------------------------
-def tracer_nuages(acc, features, titre, chemin_png):
-    ech = pd.concat(acc.ech)
-    mats = pd.concat(acc.mats)
-    sans = ech[ech["piece_mateuse"] == ""]
-    sans = sans.sample(min(N_NUAGES, len(sans)), random_state=0)
-    avec = mats.sample(frac=1, random_state=0).groupby("piece_mateuse").head(N_PAR_PIECE)
-    jeu = pd.concat([sans, avec])
-    ok = [f for f in features if jeu[f].nunique(dropna=True) > 1]
-    if len(ok) < 2:
-        print(f"  (nuages '{titre}' ignorés : moins de 2 features exploitables)")
-        return
-    k = len(ok)
 
-    X = np.array(jeu[ok], dtype=float)                          # copie modifiable (pandas peut renvoyer une vue en lecture seule)
-    rng = np.random.default_rng(0)
-    for j, f in enumerate(ok):                                  # léger bruit pour les variables discrètes
-        if jeu[f].nunique() <= MAX_VALEURS:
-            X[:, j] += rng.uniform(-0.2, 0.2, len(X))
-    piece = jeu["piece_mateuse"].to_numpy()
-    est_mat = piece != ""
-    coul = np.array([COULEURS_PIECE.get(p, COULEURS_PIECE["aucun"]) for p in piece])
 
     fig, axes = plt.subplots(k, k, figsize=(1.0 * k + 2, 1.0 * k + 2), squeeze=False)
     for i in range(k):
