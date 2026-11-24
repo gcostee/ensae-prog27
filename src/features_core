@@ -462,15 +462,6 @@ def features_partie(moves, result, evals=None):
     if run > run_max:
         run_max = run
 
- # --- promotion
-        promo = move.promotion
-        if promo:
-            n_promo += 1
-            if promo != chess.QUEEN:
-                n_sous_promo += 1
-            d += VALEUR[promo] - 1                     # le pion devient une pièce
-
-
     # ------------------------------------------------------------------------
     # Analyse des captures (à partir du dictionnaire capt)
     # ------------------------------------------------------------------------

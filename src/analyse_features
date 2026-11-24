@@ -1,4 +1,3 @@
-
 """
 Pipeline en flux (adapté à des millions de parties) :
 
@@ -516,7 +515,6 @@ def tracer_correlation(ech, chemin_png, chemin_csv):
 # ----------------------------------------------------------------------------
 # Visualisation 3 : nuages de points, colorés par pièce mateuse
 # ----------------------------------------------------------------------------
-
 def tracer_nuages(acc, features, titre, chemin_png):
     ech = pd.concat(acc.ech)
     mats = pd.concat(acc.mats)
