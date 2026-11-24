@@ -1,6 +1,6 @@
 ensae-prog27
 
-# Projet Python pour la data science : Titre du projet 
+# Projet Python pour la data science : Les plus belles parties d'échec - trouver l'esthétisme par l'algorithme 
 
 
 Auteurs : Camille BOURGET, Gautier COSTE, Valentin FAZEMBAI TREMOUILLES
@@ -42,7 +42,7 @@ Chaque mois près de 100 millions de parties d'échecs sont jouées sur lichess.
 
 ### B : Objectif du projet
 
-L'objectif du projet est de concevoir un algorithme prenant en entrée les 100 milions de parties mensuelles et renvoyant 20 parties esthétiques pour l'oeil humain qui pourraient être désignées 'game of the month'.
+L'objectif du projet est de concevoir un algorithme prenant en entrée les 100 millions de parties mensuelles et renvoyant 20 parties esthétiques pour l'oeil humain qui pourraient être désignées 'game of the month'.
 
 Au cours de ce travail nous concevrons cet algorithme et évaluerons ses performances.
 
@@ -50,9 +50,9 @@ Au cours de ce travail nous concevrons cet algorithme et évaluerons ses perform
 
 Nous avons à faire à un problème de recherche d'aiguille dans une botte de foin. Ainsi, notre algorithme fonctionne comme un entonnoir : trois filtres successifs permettent de passer du dataset complet à l'échantillon final de 20 parties.
 
-Plus le filtre traite un nombre important de parties plus il doit être léger en s'appuyant sur des opérations simples, et inversément plus il est proche de la sortie de l'entonnoir plus il peut utiliser des méthodes couteuses pour classifier les dernières parties.
+Plus le filtre traite un nombre important de parties plus il doit être léger en s'appuyant sur des opérations simples, et inversement plus il est proche de la sortie de l'entonnoir plus il peut utiliser des méthodes couteuses pour classifier les dernières parties.
 
-La première couche  (partie III A) correspond au nettoyage des données et à la sélection des parties sur lesquelles nous souhaitons nous attarder permettant de passer de 100 à 3 millions de parties, la seconde (partie III B) utilise des proproétés statistiques de manière à passer de 3 millions à 3 000 parties, et la dernière utilise un modèle de Machine Learning pour obtenir 20 parties.
+La première couche  (partie III A) correspond au nettoyage des données et à la sélection des parties sur lesquelles nous souhaitons nous attarder permettant de passer de 100 à 3 millions de parties, la seconde (partie III B) utilise des propriétés statistiques de manière à passer de 3 millions à 3 000 parties, et la dernière utilise un modèle de Machine Learning pour obtenir 20 parties.
 
 ### D : Résultats
 
@@ -63,13 +63,13 @@ La première couche  (partie III A) correspond au nettoyage des données et à l
 
 ### A : Problème des aiguilles dans une botte de foin
 
-Notre sujet est assez atypique, en effet en plus de réaliser des statistqiues descriptives, le coeur de notre problématique est de concevoir un algorithme. Pour que le projet soit sérieux il convient de pouvoir évaluer ses performances. Définissons une métrique qui permet cela.
+Notre sujet est assez atypique, en effet en plus de réaliser des statistiques descriptives, le coeur de notre problématique est de concevoir un algorithme. Pour que le projet soit sérieux il convient de pouvoir évaluer ses performances. Définissons une métrique qui permet cela.
 
 Cet algorithme tente de trouver des éléments rares (aiguilles) noyés dans un volume considérable d'information (la botte de foin). Ainsi nous utiliserons le taux de vrais positifs : le nombre de parties effectivement remarquables parmi les 20 renvoyées par l'algorithme.
 
 Nous comparerons ce résultat au témoin servant de référence. Le témoin est obtenu en tirant au hasard 10 échantillons de 20 parties parmi les 100 millions de parties. Après avoir étudié la moyenne empirique et la distribution du témoin nous pourrons conclure que notre algorithme est meilleur (ou moins bon...) que le baseline random avec un certain intervalle de confiance.
 
-Nota Bene : Faute de mieux, la classification binaire entre partie 'esthétique' et lambda a été faite à la main par un panel de 3 joueurs (classés 1200, 1500 et 2000 elo sur chess.com) à qui les 220 parties ont été montré mélangées, une partie était 'esthétique' si au moins 2 des 3 joueurs humains la jugeaient telle quelle et lambda sinon.
+Nota Bene : Faute de mieux, la classification binaire entre partie 'esthétique' et lambda a été faite à la main par un panel de 3 joueurs (classés 1200, 1500 et 2000 elo sur chess.com) à qui les 220 parties ont été montrées mélangées, une partie était 'esthétique' si au moins 2 des 3 joueurs humains la jugeaient telle quelle et lambda sinon.
 
 ### B : Présentation du dataset
 
@@ -101,11 +101,6 @@ Il convient enfin de détailler l’usage qui a été fait de l’IA générativ
 
 ---
 
-
-La première étape de notre projet consiste à réduire grandement l'échantillon de données pour ne conserver qu'un nombre restreint de parties intéressantes, que nous analyserons ensuite de manière plus poussée. 
-Pour cela, nous regroupons les parties par paquets de 500 000, et nous effectuons le filtrage suivant : conserver seulement les parties avec un vainqueur, dont les deux joueurs ont plus de 1500 elo (ce qui correspond au top 50% des joueurs) et avec un faible écart de niveau entre les joueurs. Nous avons supprimons ensuite les parties jouées par correspondance, et celles dont l'évaluation n'est pas disponible : l'évaluation nous permet d'avoir plus d'informations sur la partie, et le fait qu'un des joueurs ait cherché à l'évaluer renvoie déjà un signal sur sa qualité. 
-A la fin de cette étape, il nous reste un total de *3 124 123* parties, soit *3,3 %* du nombre du départ. Cette première étape nous permet donc de réduire grandement la quantité de données à traiter de manière rapide et efficace (on a peu de chance d'éliminer une des plus "belles" parties de cette façon).
-Enfin, en plus de fluidifier l'exécution du code, le fait de regrouper les parties par groupe de 500 000 nous a permis d'évaluer combien de parties ce filtrage conserve en moyenne afin dimensionner au mieux l'étape suivante. En effet, nous avons constaté lors des tests que cette étape conserve en moyenne *158 000* parties par groupe, avec une faible variance empirique (*3%* de la moyenne). Sur cette base, nous avons donc calibré l'algorithme de l'étape suivante pour traiter 3 millions de parties, le risque de dépasser significativement ce nombre étant très faible. 
 
 ## III : Présentation détaillée des trois couches
 
