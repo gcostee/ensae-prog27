@@ -27,7 +27,7 @@ try:                                                 # permet d'importer feature
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 except NameError:
     pass
-from features_cores import extraire_evals, sans_variations      # lecture des évaluations (même code que l'analyse)
+from features_core import extraire_evals, sans_variations      # lecture des évaluations (même code que l'analyse)
 
 # Dossier des données : variable d'environnement LICHESS_DATA, sinon <racine du dépôt>/donnees
 RACINE = Path(__file__).resolve().parent.parent
