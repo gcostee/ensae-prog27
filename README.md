@@ -37,7 +37,7 @@ Auteurs : Camille BOURGET, Gautier COSTE, Valentin
 
 ### A : Contexte
 
-    Chaque mois près de 100 millions de parties d'échecs sont jouées sur lichess.org, le deuxième site le plus populaire en la matière.
+Chaque mois près de 100 millions de parties d'échecs sont jouées sur lichess.org, le deuxième site le plus populaire en la matière. Chaque mois les joueurs proposent et élisent au cours d'un vote la 'game of the month', à savoir la plus belle partie selon des critères humains subjectifs d'esthétisme : [text](https://lichess.org/@/Lichess/blog/lichess-game-of-the-month-august-26/ekVdAfDN).
 
 ### B : Objectif du projet
 
