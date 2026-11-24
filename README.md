@@ -10,31 +10,53 @@ Auteurs : Camille BOURGET, Gautier COSTE, Valentin
 
 ## I : Introduction
 
-# A : objectif du projet
-# B : Méthode
-# C : Résultats
+### A : Contexte
+### B : Objectif du projet
+### B : Méthode
+### C : Résultats
 
 ##  II : Méthode et vue d'ensemble qualitative du projet
 
-# A : Problème des aiguilles dans une botte de foin
-# B : Présentation du dataset
-# C : 'L'esthétisme' : comment quantifier un concept humain ?
-# D : Reproductibulité des résultats
-# E : Usage de l’IA générative
+### A : Problème des aiguilles dans une botte de foin
+### B : Présentation du dataset
+### C : 'L'esthétisme' : comment quantifier un concept humain ?
+### D : Reproductibulité des résultats
+### E : Usage de l’IA générative
 
 ## III : Présentation détaillée des trois couches
 
-# A : Nettoyage et premières hypothèses
-# B : Vectorisation et élagage grâce à la théorie des valeurs extrêmes
-# C : 
+### A : Nettoyage et premières hypothèses
+### B : Vectorisation et élagage grâce à la théorie des valeurs extrêmes
+### C :
 
 ## IV : Conclusion
 
 ---
 
-## I : Méthode et vue d'ensemble qualitative du projet 
+## Introduction
+
+### A : Contexte
+
+    Chaque mois près de 100 millions de parties d'échecs sont jouées sur lichess.org, le deuxième site le plus populaire en la matière.
+
+### B : Objectif du projet
+
+
+
+### B : Méthode
+
+
+
+### C : Résultats
+
+
+
+
+## II : Méthode et vue d'ensemble qualitative du projet
 
 ### A : Problème des aiguilles dans une botte de foin
+
+aa
 
 ### B : Présentation du dataset
 
