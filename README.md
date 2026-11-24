@@ -12,7 +12,7 @@ Auteurs : Camille BOURGET, Gautier COSTE, Valentin
 
 ### A : Contexte
 ### B : Objectif du projet
-### B : Méthode
+### B : Architecture
 ### C : Résultats
 
 ##  II : Méthode et vue d'ensemble qualitative du projet
@@ -37,7 +37,8 @@ Auteurs : Camille BOURGET, Gautier COSTE, Valentin
 
 ### A : Contexte
 
-Chaque mois près de 100 millions de parties d'échecs sont jouées sur lichess.org, le deuxième site le plus populaire en la matière. Chaque mois les joueurs proposent et élisent au cours d'un vote la 'game of the month', à savoir la plus belle partie selon des critères humains subjectifs d'esthétisme : [game of the month d'août dernier](blog/lichess-game-of-the-month-august-26/ekVdAfDN).
+Chaque mois près de 100 millions de parties d'échecs sont jouées sur lichess.org, le deuxième site le plus populaire en la matière. Chaque mois les joueurs proposent et élisent au cours d'un vote la 'game of the month', à savoir la plus belle partie selon des critères humains subjectifs d'esthétisme : game of the month d'août 2026, blog/lichess-game-of-the-month-august-26/ekVdAfDN.
+
 
 ### B : Objectif du projet
 
@@ -45,7 +46,7 @@ L'objectif du projet est de concevoir un algorithme prenant en entrée les 100 m
 
 Au cours de ce travail nous concevrons cet algorithme et évaluerons ses performances.
 
-### B : Méthode
+### C : Architecture
 
 Nous avons à faire à un problème de recherche d'aiguille dans une botte de foin. Ainsi, notre algorithme fonctionne comme un entonnoir : trois filtres successifs permettent de passer du dataset complet à l'échantillon final de 20 parties.
 
@@ -53,7 +54,7 @@ Plus le filtre traite un nombre important de parties plus il doit être léger e
 
 La première couche  (partie III A) correspond au nettoyage des données et à la sélection des parties sur lesquelles nous souhaitons nous attarder permettant de passer de 100 à 3 millions de parties, la seconde (partie III B) utilise des proproétés statistiques de manière à passer de 3 millions à 3 000 parties, et la dernière utilise un modèle de Machine Learning pour obtenir 20 parties.
 
-### C : Résultats
+### D : Résultats
 
 
 
@@ -62,7 +63,13 @@ La première couche  (partie III A) correspond au nettoyage des données et à l
 
 ### A : Problème des aiguilles dans une botte de foin
 
-aa
+Notre sujet est assez atypique, en effet en plus de réaliser des statistqiues descriptives, le coeur de notre problématique est de concevoir un algorithme. Pour que le projet soit sérieux il convient de pouvoir évaluer ses performances. Définissons une métrique qui permet cela.
+
+Cet algorithme tente de trouver des éléments rares (aiguilles) noyés dans un volume considérable d'information (la botte de foin). Ainsi nous utiliserons le taux de vrais positifs : le nombre de parties effectivement remarquables parmi les 20 renvoyées par l'algorithme.
+
+Nous comparerons ce résultat au témoin servant de référence. Le témoin est obtenu en tirant au hasard 10 échantillons de 20 parties parmi les 100 millions de parties. Après avoir étudié la moyenne empirique et la distribution du témoin nous pourrons conclure que notre algorithme est meilleur (ou moins bon...) que le baseline random avec un certain intervalle de confiance.
+
+Nota Bene : Faute de mieux, la classification binaire entre partie 'esthétique' et lambda a été faite à la main par un panel de 3 joueurs (classés 1200, 1500 et 2000 elo sur chess.com) à qui les 220 parties ont été montré mélangées, une partie était 'esthétique' si au moins 2 des 3 joueurs humains la jugeaient telle quelle et lambda sinon.
 
 ### B : Présentation du dataset
 
