@@ -39,8 +39,8 @@ try:                                                 # permet d'importer feature
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 except NameError:
     pass
-import features_core
-from features_core import DECIMALES, FEATURES_PARTIE, MANQ_MAX, SENT, nb_demi_coups, traiter_bloc
+import features_cores
+from features_cores import DECIMALES, FEATURES_PARTIE, MANQ_MAX, SENT, nb_demi_coups, traiter_bloc
 
 # ----------------------------------------------------------------------------
 # Configuration
