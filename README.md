@@ -26,7 +26,7 @@ Auteurs : Camille BOURGET, Gautier COSTE, Valentin
 ## III : Présentation détaillée des trois couches
 
 ### A : Nettoyage et premières hypothèses
-### B : Vectorisation et élagage grâce à la théorie des valeurs extrêmes
+### B : Vectorisation et élagage statistique : théorie des valeurs extrêmes
 ### C :
 
 ## IV : Conclusion
@@ -37,15 +37,21 @@ Auteurs : Camille BOURGET, Gautier COSTE, Valentin
 
 ### A : Contexte
 
-Chaque mois près de 100 millions de parties d'échecs sont jouées sur lichess.org, le deuxième site le plus populaire en la matière. Chaque mois les joueurs proposent et élisent au cours d'un vote la 'game of the month', à savoir la plus belle partie selon des critères humains subjectifs d'esthétisme : [text](https://lichess.org/@/Lichess/blog/lichess-game-of-the-month-august-26/ekVdAfDN).
+Chaque mois près de 100 millions de parties d'échecs sont jouées sur lichess.org, le deuxième site le plus populaire en la matière. Chaque mois les joueurs proposent et élisent au cours d'un vote la 'game of the month', à savoir la plus belle partie selon des critères humains subjectifs d'esthétisme : [game of the month d'août dernier](blog/lichess-game-of-the-month-august-26/ekVdAfDN).
 
 ### B : Objectif du projet
 
+L'objectif du projet est de concevoir un algorithme prenant en entrée les 100 milions de parties mensuelles et renvoyant 20 parties esthétiques pour l'oeil humain qui pourraient être désignées 'game of the month'.
 
+Au cours de ce travail nous concevrons cet algorithme et évaluerons ses performances.
 
 ### B : Méthode
 
+Nous avons à faire à un problème de recherche d'aiguille dans une botte de foin. Ainsi, notre algorithme fonctionne comme un entonnoir : trois filtres successifs permettent de passer du dataset complet à l'échantillon final de 20 parties.
 
+Plus le filtre traite un nombre important de parties plus il doit être léger en s'appuyant sur des opérations simples, et inversément plus il est proche de la sortie de l'entonnoir plus il peut utiliser des méthodes couteuses pour classifier les dernières parties.
+
+La première couche  (partie III A) correspond au nettoyage des données et à la sélection des parties sur lesquelles nous souhaitons nous attarder permettant de passer de 100 à 3 millions de parties, la seconde (partie III B) utilise des proproétés statistiques de manière à passer de 3 millions à 3 000 parties, et la dernière utilise un modèle de Machine Learning pour obtenir 20 parties.
 
 ### C : Résultats
 
