@@ -3,7 +3,7 @@ ensae-prog27
 # Projet Python pour la data science : Titre du projet 
 
 
-Auteurs : Camille BOURGET, Gautier COSTE, Valentin 
+Auteurs : Camille BOURGET, Gautier COSTE, Valentin FAZEMBAI TREMOUILLES
 ---
 
 ## I : Présentation du projet et méthode 
