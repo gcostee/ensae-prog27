@@ -109,3 +109,24 @@ La seconde étape correspond à l’analyse et l’évaluation des 3 millions de
 Ensuite, il s’agit d’identifier les vecteurs, et de fait les parties, les plus rares. C’est une des grandes difficultés auxquelles nous avons été confrontés puisqu’il fallait déterminer une métrique pour classer les vecteurs, en s’assurant que celle-ci permettrait de distinguer des  “belles parties” conformément à notre opinion sur l’esthétisme. 
 Pour ce faire, nous avons cherché à obtenir un score d’atypicité d’une partie à partir de sa distance au centre de gravité de nos 3 millions de vecteurs. Les métriques classiques (norme infinie, distance euclidienne) ne convenaient pas puisqu’elles ne prennent pas en compte l’échelle différente des variables (binaires, sur N, sur Z-...) et la corrélation entre ces variables (une partie longue a mécaniquement plus de captures par exemple). C’est pourquoi nous avons utilisé la distance de Mahalanobis qui corrige ces deux défauts. De plus, nous avons scindé les calculs par type d’ouverture (certaines ouvertures aboutissent à des parties plus longues par exemple). En outre, c’est une version robuste de la distance qui a été employée afin de limiter l’effet des valeurs extrêmes sur le centre de gravité. Précisément, dans elagage_evt.py, les parties sont d'abord regroupées par code ECO (groupes_reference), puis les variables sont transformées (transformer) et la distance de Mahalanobis robuste est calculée en écartant itérativement les 10 % de parties les plus extrêmes (ajuster avec TRIM = 0.9, puis distances).
 Enfin, une fois que l’on a ces scores d’atypicité, il faut pouvoir en déduire quelles parties sont vraiment “exceptionnelles”. Un top 100 (ou autre) n’a pas de justification statistique par exemple. C’est pourquoi nous avons utilisé l’EVT (extreme value theory) via la méthode POT (Peaks Over Threshold). Cela consiste à calculer pour chaque partie, la probabilité qu’une partie de cette même ouverture soit au moins aussi atypique que celle-ci (p-valeur de rareté). On peut alors dire des parties dont cette probabilité est inférieure à un seuil préalablement déterminé (0.1% par exemple) qu’elles sont véritablement exceptionnelles. 
+
+### Justification statistique de la méthodologie
+
+En amont du traitement des parties, nous avons observé les données par le biais de statistiques descriptives. Cela nous a permis d'employer les méthodes adaptées au dataset, mentionnées ci-dessus (Mahalanodis, découpage par ouverture, modélisation EVT/POT...). 
+NB : ces statistiques ont été réalisées sur 200 000 parties du fait de difficultés à télécharger l'ensemble du dataset. 
+
+1. **Corrélations entre features**
+![Matrice de corrélation](images/matrice_correlation.png)
+*Les fortes corrélations observées entre variables (notamment entre la longueur de la partie et les compteurs de captures ou d'échecs) prouvent qu'une distance euclidienne biaiserait le score et justifient l'usage de la distance de Mahalanobis.*
+
+2. **Distributions asymétriques à queues longues**
+![Distributions en échelle logarithmique](images/graph2_distributions.png)
+*Les distributions fortement asymétriques (où l'immense majorité des parties reste proche de zéro tandis que quelques cas atteignent des valeurs extrêmes) justifient à la fois la transformation `log1p` et le recours à la théorie des valeurs extrêmes.*
+
+3. **Différences selon l'ouverture (code ECO)**
+![Comparaison entre ouvertures](images/graph3_comparaison_eco.png)
+*Les écarts de distribution observés entre les principales ouvertures confirment que la « norme » dépend du type de partie joué, ce qui impose de calculer la distance de Mahalanobis et les seuils de rareté ouverture par ouverture.*
+
+4. **Modélisation de la queue par EVT / POT**
+![Ajustement EVT/POT](images/graph4_evt_pot.png)
+*Au-delà du seuil du 95e percentile ($u$), la loi de Pareto généralisée modélise la queue des distances de Mahalanobis et permet d'isoler rigoureusement les parties statistiquement exceptionnelles sous le seuil $p \le 10^{-3}$.*
