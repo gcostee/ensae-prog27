@@ -73,7 +73,7 @@ Nota Bene : Faute de mieux, la classification binaire entre partie 'esthétique'
 ### B : Présentation du dataset
 
 Les données utilisées pour ce projet proviennent de la base de donnée Lichess : https://database.lichess.org/
-Les données sont des parties au format PGN, le format standart pour enregistrer des parties d'échec. Pour chaque partie, le PGN contient : le tournoi ou contexte de la partie, le lieu, la date, la ronde, les noms de joueurs, le resultat le classement des joueurs et la cadence, ainsi que l'ensemble de la partie avec les coups en notation algébrique standart (SAN). Ce format permet de stocker un maximum de données sur une partie tout en étant très léger, ce qui nous a permis de travailler sur un grand nombre de parties (environ 100 millions de parties par mois).
+Les données sont des parties au format PGN, le format standard pour enregistrer des parties d'échec. Pour chaque partie, le PGN contient : le tournoi ou contexte de la partie, le lieu, la date, la ronde, les noms de joueurs, le resultat le classement des joueurs et la cadence, ainsi que l'ensemble de la partie avec les coups en notation algébrique standart (SAN). Ce format permet de stocker un maximum de données sur une partie tout en étant très léger, ce qui nous a permis de travailler sur un grand nombre de parties (environ 100 millions de parties par mois).
 
 ### C : 'L'esthétisme' : comment quantifier un concept humain ?
 
@@ -103,7 +103,7 @@ Il convient enfin de détailler l’usage qui a été fait de l’IA générativ
 
 ## III : Présentation détaillée des trois couches
 
-# A : Nettoyage et premières hypothèses
+### A : Nettoyage et premières hypothèses
 
 La première étape de notre projet consiste à réduire grandement l'échantillon de données pour ne conserver qu'un nombre restreint de parties intéressantes, que nous analyserons ensuite de manière plus poussée. 
 Pour cela, nous regroupons les parties par paquets de 500 000, et nous effectuons le filtrage suivant : conserver seulement les parties avec un vainqueur, dont les deux joueurs ont plus de 1500 elo (ce qui correspond au top 50% des joueurs) et avec un faible écart de niveau entre les joueurs. Nous avons supprimons ensuite les parties jouées par correspondance, et celles dont l'évaluation n'est pas disponible : l'évaluation nous permet d'avoir plus d'informations sur la partie, et le fait qu'un des joueurs ait cherché à l'évaluer renvoie déjà un signal sur sa qualité. 
@@ -114,7 +114,7 @@ Enfin, en plus de fluidifier l'exécution du code, le fait de regrouper les part
 
 La seconde étape correspond à l’analyse et l’évaluation des 3 millions de parties conservées. Le but est de distinguer une poignée de parties exceptionnelles.
 
-D’abord, il s’agit de définir des features (critères d’évaluation) que l’on peut regrouper au sein des catégories suivantes : complexité de la partie (elo moyen des deux joueurs, longueur de la partie), combats et fluctuations matérielles (nombre de captures, remontada…), sacrifices et déséquilibre d’échanges, complexité tactique (nombre d’échecs, de coup avec capture, de promotions…), dynamisme de la partie (nombre de coups du roi, longueur max d’une séquence sans capture). Une cinquantaine de features sont calculées partie par partie dans features_core.py (fonctions features_partie et features_eval). Chaque partie est alors identifiée comme un vecteur de dimension du nombre de features.
+D’abord, il s’agit de définir des features (critères d’évaluation) que l’on peut regrouper au sein des catégories suivantes : complexité de la partie (elo moyen des deux joueurs, longueur de la partie), combats et fluctuations matérielles (nombre de captures, remontada…), sacrifices et déséquilibre d’échanges, complexité tactique (nombre d’échecs, de coups avec capture, de promotions…), dynamisme de la partie (nombre de coups du roi, longueur max d’une séquence sans capture). Une cinquantaine de features sont calculées partie par partie dans features_core.py (fonctions features_partie et features_eval). Chaque partie est alors identifiée comme un vecteur de dimension du nombre de features.
 
 Ensuite, il s’agit d’identifier les vecteurs, et de fait les parties, les plus rares. C’est une des grandes difficultés auxquelles nous avons été confrontés puisqu’il fallait déterminer une métrique pour classer les vecteurs, en s’assurant que celle-ci permettrait de distinguer des “belles parties” conformément à notre opinion sur l'esthétique d'une partie.
 
