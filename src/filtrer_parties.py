@@ -31,8 +31,8 @@ from features_core import extraire_evals, sans_variations      # lecture des év
 
 # Dossier des données : variable d'environnement LICHESS_DATA, sinon <racine du dépôt>/donnees
 RACINE = Path(__file__).resolve().parent.parent
-DOSSIER = os.environ.get("LICHESS_DATA", str(RACINE))
-FICHIER = "mini_dump.pgn.zst"    # nom du dump, dans DOSSIER
+DOSSIER = os.environ.get("LICHESS_DATA", str(RACINE / "donnees"))
+FICHIER = "lichess_db_standard_rated_2026-01.pgn.zst"    # nom du dump, dans DOSSIER
 SORTIE = "parties_filtrees.parquet"                      # parquet produit, dans DOSSIER
 
 debut = time.perf_counter()
