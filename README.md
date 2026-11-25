@@ -1,11 +1,11 @@
 # lichess-features
 
 Recherche de parties d'échecs remarquables (du type « partie du mois » de Lichess) dans un dump mensuel de la base
-Lichess (~90 millions de parties) : filtrage, calcul d'une soixantaine de features par partie, sélection statistique
+Lichess (~100 millions de parties) : filtrage, calcul d'une soixantaine de features par partie, sélection statistique
 des parties atypiques, puis PU learning appris sur les parties du mois pour ne garder que 20 parties.
 
 ```
-dump Lichess (.pgn.zst, ~90 M parties)
+dump Lichess (.pgn.zst, ~100 M parties)
    │  1. filtrer_parties.py      parties exploitables (Elo ≥ 1500, 20-120 coups, décisives, évaluées)
    │  1. analyse_features.py     ~60 features par partie + statistiques et graphiques
    ▼
@@ -28,7 +28,7 @@ et laisse de la place pour les commentaires. Chaque script peut aussi être lanc
 ## Structure du dépôt
 
 ```
-lichess-features/
+ensae-prog27/
 ├── main.ipynb               notebook principal (toutes les étapes, tableaux, graphiques, commentaires)
 ├── README.md
 ├── requirements.txt
@@ -72,7 +72,7 @@ pip install -r requirements.txt
 (Windows : version « x86-64-avx2 » pour un processeur récent), le décompresser hors du dépôt, puis indiquer son chemin :
 variable d'environnement `STOCKFISH_PATH`, variable `STOCKFISH` du notebook, ou option `--stockfish`.
 
-## Données (restent sur votre machine)
+## Données
 
 Les données ne sont jamais versionnées. Par défaut elles sont lues et écrites dans `donnees/` à la racine du dépôt ;
 pour un autre emplacement (conseillé : un disque hors OneDrive), définir la variable `LICHESS_DATA`, ou régler
@@ -139,24 +139,6 @@ python src/comparaison.py --dump lichess_db_standard_rated_2026-01.pgn.zst
 | pu_learning, echantillon_final | moins d'une minute | |
 | comparaison | 5 à 30 min | décompression de tout le dump |
 
-## Méthode, en bref
-
-**Sélection (étape 2).** Pour chaque code ECO d'au moins 5 000 parties, la distance de Mahalanobis robuste (covariance
-élaguée, régularisée) ramène les features à une seule mesure d'atypicité ; une loi de Pareto généralisée ajustée sur la
-queue (méthode POT) donne une p-valeur de rareté ; les parties sous `--p-seuil` sont retenues et réunies en une base.
-
-**PU learning (étape 3).** Les parties du mois sont les seuls exemples positifs connus ; le témoin est un échantillon de
-la population, non étiqueté. Méthode d'Elkan et Noto (2008) : un classifieur g(x) apprend à séparer P de U ;
-c = P(s=1 | y=1) est estimé par la moyenne de g sur les positifs non vus (validation croisée) ; une candidate est
-positive si g(x)/c ≥ 0,5. Le classifieur (régression logistique régularisée) n'utilise pas l'Elo, la longueur ni la
-fréquence de l'ouverture, pour apprendre l'intérêt de la partie et non le niveau des joueurs.
-
-**Échantillon final.** Au plus 20 parties : la moitié parmi les plus grandes raretés, l'autre moitié parmi les
-positives plus communes (réparties en tranches de rareté), au plus 3 par code ECO.
-
-**Parties du mois de janvier et février 2026.** Elles sont exclues des positifs ; celle de janvier peut servir de
-test : se trouve-t-elle dans le dump de janvier, puis parmi les candidates, puis dans les 20 parties finales ?
-
 ## Reproductibilité
 
 * Tirages aléatoires à graine fixe (`--graine`, 0 par défaut) : témoin, comparaison, validation croisée.
@@ -177,7 +159,3 @@ test : se trouve-t-elle dans le dump de janvier, puis parmi les candidates, puis
 * Les fichiers d'`exemples/` sont synthétiques (coups joués au hasard) : ils vérifient le fonctionnement, leurs
   résultats n'ont aucun sens échiquéen.
 
-## Licence et données
-
-Ajouter ici la licence du code (par exemple MIT). Les parties de la base Lichess sont publiées sous licence CC0
-(<https://database.lichess.org>).
