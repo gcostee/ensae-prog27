@@ -1,4 +1,4 @@
-# lichess-features
+# ensae-prog27
 
 Recherche de parties d'échecs remarquables (du type « partie du mois » de Lichess) dans un dump mensuel de la base
 Lichess (~100 millions de parties) : filtrage, calcul d'une soixantaine de features par partie, sélection statistique
